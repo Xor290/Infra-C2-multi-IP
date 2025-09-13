@@ -1,0 +1,40 @@
+global_defs {
+    router_id {{ inventory_hostname }}
+}
+
+vrrp_script check_nginx {
+    script "/opt/scripts/check_nginx.sh"
+    interval 15
+    weight 5
+    user root
+}
+
+vrrp_instance VI_1 {
+    state MASTER
+    interface {{ c2_interface }}
+    virtual_router_id 101
+    priority 100
+    advert_int 3
+
+    authentication {
+        auth_type PASS
+        auth_pass {{ keepalived_pass }}
+    }
+
+    unicast_src_ip {{ c2_bind_ip[inventory_hostname] }}
+    unicast_peer {
+      {% for host, ip in c2_bind_ip.items() %}
+        {% if host != inventory_hostname %}
+          {{ ip }}
+        {% endif %}
+      {% endfor %}
+    }
+
+    virtual_ipaddress {
+        {{ nginx_vip }}
+    }
+
+    track_script {
+        check_nginx
+    }
+}

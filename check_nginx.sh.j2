@@ -1,0 +1,9 @@
+#!/bin/bash
+
+if curl -s --connect-timeout 5 http://127.0.0.1/ > /dev/null; then
+    # Nginx fonctionne
+    exit 0
+else
+    # Nginx ne répond pas
+    exit 1
+fi

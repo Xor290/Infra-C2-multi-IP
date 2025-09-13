@@ -1,0 +1,14 @@
+#!/bin/bash
+
+PGUSER="{{ postgres_user }}"
+PGPORT="{{ postgres_port }}"
+PGHOST="127.0.0.1"
+
+# Vérifier si PostgreSQL répond
+pg_isready -h $PGHOST -p $PGPORT -U $PGUSER > /dev/null 2>&1
+if [ $? -ne 0 ]; then
+    echo "PostgreSQL ne répond pas"
+    exit 1
+fi
+
+

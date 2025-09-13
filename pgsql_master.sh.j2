@@ -1,0 +1,10 @@
+# Vérifier si l'instance est master (pas en recovery)
+IS_MASTER=$(psql -U $PGUSER -h $PGHOST -p $PGPORT -t -c "SELECT NOT pg_is_in_recovery();" | xargs)
+
+if [ "$IS_MASTER" = "t" ]; then
+    echo "Ceci est le master"
+    exit 0
+else
+    echo "Ceci est un standby"
+    exit 1
+fi

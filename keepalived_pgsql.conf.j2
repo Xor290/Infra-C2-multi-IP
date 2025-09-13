@@ -1,0 +1,37 @@
+global_defs {
+    router_id {{ inventory_hostname }}
+}
+
+vrrp_script check_postgresql {
+    script "/opt/scripts/check_pgsql.sh"
+    interval 15
+    weight 5
+    user root
+}
+
+vrrp_instance VI_POSTGRES {
+    state MASTER
+    interface {{ pg_interface }}
+    virtual_router_id 101
+    priority 110
+    advert_int 3
+    authentication {
+        auth_type PASS
+        auth_pass {{ keepalived_pass }}
+    }
+    unicast_src_ip {{ pg_bind_ip[inventory_hostname] }}
+    unicast_peer {
+      {% for host, ip in pg_bind_ip.items() %}
+        {% if host != inventory_hostname %}
+          {{ ip }}
+        {% endif %}
+      {% endfor %}
+    }
+    virtual_ipaddress {
+        {{ postgres_vip }}
+    }
+    track_script {
+        check_postgresql
+    }
+    notify_master "/opt/scripts/pgsql_master.sh"
+}
