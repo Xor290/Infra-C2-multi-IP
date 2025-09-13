@@ -10,10 +10,17 @@
     postgres_user: pgadmin
     postgres_password: StrongPassword123
     postgres_db: c2db
+    pg_interface: ens192
     postgres_port: 5432
     replication_user: repl
     replication_password: ReplPass123
     master_ip: 172.18.0.2 
+    keepalived_pass: "PostgresHA2024"
+    postgres_vip: 172.18.0.10
+    pg_interface: ens192
+    pg_bind_ip:
+      pg-1: 172.18.0.5  
+      pg-2: 172.18.0.6  
 
   tasks:
     - name: Afficher la configuration
