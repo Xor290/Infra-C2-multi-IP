@@ -1,0 +1,104 @@
+- name: Provision des conteneurs C2 + Nginx
+  hosts:
+    - c2-1
+    - c2-2
+  become: true
+  gather_facts: false
+  vars:
+    keepalived_pass: your_vrrp_password
+    nginx_vip: 172.20.0.100
+    c2_interface: ens192
+    c2_bind_ip:
+      c2-1: 172.18.0.4
+      c2-2: 172.18.0.2
+
+  tasks:
+    - name: Installer Nginx
+      ansible.builtin.dnf:
+        name: nginx
+        state: present
+
+    - name: Créer les répertoires sites-available et sites-enabled
+      ansible.builtin.file:
+        path: "/etc/nginx/{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: 0755
+      loop:
+        - sites-available
+        - sites-enabled
+
+    - name: Créer fichier de configuration Nginx pour C2
+      ansible.builtin.template:
+        src: templates/nginx-c2.conf.j2
+        dest: /etc/nginx/sites-available/c2.conf
+        owner: root
+        group: root
+        mode: 0644
+
+    - name: Activer le site C2
+      ansible.builtin.file:
+        src: /etc/nginx/sites-available/c2.conf
+        dest: /etc/nginx/sites-enabled/c2.conf
+        state: link
+
+    - name: Désactiver le site par défaut
+      ansible.builtin.file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+
+    - name: Redémarrer Nginx
+      ansible.builtin.service:
+        name: nginx
+        state: restarted
+        enabled: yes
+
+    - name: Démarrer le C2
+      ansible.builtin.shell: |
+        nohup /path/to/c2 &> /var/log/c2.log &
+      args:
+        executable: /bin/bash
+
+    - name: Installer Keepalived pour le cluster Nginx
+      ansible.builtin.dnf:
+        name: keepalived
+        state: present
+
+    - name: Créer le dossier pour les scripts
+      ansible.builtin.file:
+        path: /opt/scripts
+        state: directory
+        owner: root
+        group: root
+        mode: 0755
+
+    - name: Ajout script shell
+      ansible.builtin.template:
+        src: templates/check_nginx.sh.j2
+        dest: /opt/scripts/check_nginx.sh
+        owner: root
+        group: root
+        mode: 0755
+
+    - name: Déployer configuration Keepalived
+      ansible.builtin.template:
+        src: templates/keepalived.conf.j2
+        dest: /etc/keepalived/keepalived.conf
+        owner: root
+        group: root
+        mode: 0644
+    
+    - name: Déployer configuration Keepalived
+      ansible.builtin.template:
+        src: templates/keepalived2.conf.j2
+        dest: /etc/keepalived/keepalived.conf
+        owner: root
+        group: root
+        mode: 0644
+
+    - name: Activer et démarrer Keepalived
+      ansible.builtin.service:
+        name: keepalived
+        state: started
+        enabled: yes
