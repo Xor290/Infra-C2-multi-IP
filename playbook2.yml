@@ -1,0 +1,267 @@
+---
+- name: Configuration PostgreSQL Master-Replica
+  hosts: pg-1,pg-2
+  become: true
+  gather_facts: true
+  serial: 1
+
+  vars:
+    postgres_version: 15
+    postgres_user: pgadmin
+    postgres_password: StrongPassword123
+    postgres_db: c2db
+    postgres_port: 5432
+    replication_user: repl
+    replication_password: ReplPass123
+    master_ip: 172.18.0.2 
+
+  tasks:
+    - name: Afficher la configuration
+      ansible.builtin.debug:
+        msg: 
+          - "Host: {{ inventory_hostname }}"
+          - "Master IP: {{ master_ip }}"
+          - "Role: {% if inventory_hostname == 'pg-1' %}MASTER{% else %}REPLICA{% endif %}"
+
+    - name: Installer psycopg2
+      ansible.builtin.yum:
+        name: python3-psycopg2
+        state: present
+
+    - name: Installer le dépôt PostgreSQL
+      ansible.builtin.yum:
+        name: https://download.postgresql.org/pub/repos/yum/reporpms/EL-9-x86_64/pgdg-redhat-repo-latest.noarch.rpm
+        state: present
+        disable_gpg_check: yes
+
+    - name: Désactiver le module PostgreSQL de l'OS
+      ansible.builtin.command:
+        cmd: dnf -qy module disable postgresql
+
+    - name: Installer PostgreSQL {{ postgres_version }}
+      ansible.builtin.yum:
+        name:
+          - postgresql{{ postgres_version }}
+          - postgresql{{ postgres_version }}-server
+          - postgresql{{ postgres_version }}-contrib
+        state: present
+
+    # Configuration Master (pg-1)
+    - name: "MASTER - Initialiser PostgreSQL"
+      ansible.builtin.shell: |
+        /usr/pgsql-{{ postgres_version }}/bin/postgresql-{{ postgres_version }}-setup initdb
+      args:
+        creates: /var/lib/pgsql/{{ postgres_version }}/data/PG_VERSION
+      when: inventory_hostname == 'pg-1'
+
+    - name: "MASTER - Configurer postgresql.conf"
+      ansible.builtin.lineinfile:
+        path: /var/lib/pgsql/{{ postgres_version }}/data/postgresql.conf
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+      loop:
+        - { regexp: '^#?listen_addresses =', line: "listen_addresses = '*'" }
+        - { regexp: '^#?wal_level =', line: "wal_level = replica" }
+        - { regexp: '^#?max_wal_senders =', line: "max_wal_senders = 10" }
+        - { regexp: '^#?wal_keep_size =', line: "wal_keep_size = 64" }
+        - { regexp: '^#?hot_standby =', line: "hot_standby = on" }
+      when: inventory_hostname == 'pg-1'
+
+    - name: "MASTER - Configurer pg_hba.conf"
+      ansible.builtin.lineinfile:
+        path: /var/lib/pgsql/{{ postgres_version }}/data/pg_hba.conf
+        insertafter: '^# "local" is for Unix domain socket connections only'
+        line: "{{ item }}"
+      loop:
+        - "local   all             postgres                                trust"
+        - "host    all             all             0.0.0.0/0               md5"
+        - "host    replication     {{ replication_user }} 0.0.0.0/0        md5"
+      when: inventory_hostname == 'pg-1'
+
+    - name: "MASTER - Démarrer PostgreSQL"
+      ansible.builtin.service:
+        name: postgresql-{{ postgres_version }}
+        state: restarted
+        enabled: yes
+      when: inventory_hostname == 'pg-1'
+
+    - name: "MASTER - Attendre que PostgreSQL soit prêt"
+      ansible.builtin.wait_for:
+        port: "{{ postgres_port }}"
+        timeout: 30
+      when: inventory_hostname == 'pg-1'
+
+    - name: "MASTER - Créer l'utilisateur principal"
+      become_user: postgres
+      community.postgresql.postgresql_user:
+        name: "{{ postgres_user }}"
+        password: "{{ postgres_password }}"
+        role_attr_flags: CREATEDB,LOGIN
+      when: inventory_hostname == 'pg-1'
+
+    - name: "MASTER - Créer la base de données"
+      become_user: postgres
+      community.postgresql.postgresql_db:
+        name: "{{ postgres_db }}"
+        owner: "{{ postgres_user }}"
+      when: inventory_hostname == 'pg-1'
+
+    - name: "MASTER - Créer l'utilisateur de réplication"
+      become_user: postgres
+      community.postgresql.postgresql_user:
+        name: "{{ replication_user }}"
+        password: "{{ replication_password }}"
+        role_attr_flags: REPLICATION,LOGIN
+      when: inventory_hostname == 'pg-1'
+
+    - name: "MASTER - Configuration terminée"
+      ansible.builtin.debug:
+        msg: "Configuration du master terminée. IP: {{ master_ip }}"
+      when: inventory_hostname == 'pg-1'
+
+    - name: "REPLICA - Tester la connectivité vers le master"
+      ansible.builtin.wait_for:
+        host: "{{ master_ip }}"
+        port: "{{ postgres_port }}"
+        timeout: 30
+      when: inventory_hostname == 'pg-2'
+
+    - name: "REPLICA - Tester l'authentification de réplication"
+      ansible.builtin.shell: |
+        PGPASSWORD="{{ replication_password }}" psql -h {{ master_ip }} -p {{ postgres_port }} -U {{ replication_user }} -d postgres -c "SELECT 1;"
+      retries: 3
+      delay: 5
+      register: auth_test
+      until: auth_test.rc == 0
+      when: inventory_hostname == 'pg-2'
+
+    - name: "REPLICA - Arrêter PostgreSQL"
+      ansible.builtin.service:
+        name: postgresql-{{ postgres_version }}
+        state: stopped
+      failed_when: false
+      when: inventory_hostname == 'pg-2'
+
+    - name: "REPLICA - Nettoyer le répertoire de données"
+      ansible.builtin.file:
+        path: /var/lib/pgsql/{{ postgres_version }}/data
+        state: absent
+      when: inventory_hostname == 'pg-2'
+
+    - name: "REPLICA - Créer le répertoire de données"
+      ansible.builtin.file:
+        path: /var/lib/pgsql/{{ postgres_version }}/data
+        state: directory
+        owner: postgres
+        group: postgres
+        mode: '0700'
+      when: inventory_hostname == 'pg-2'
+
+    - name: "REPLICA - Créer le fichier .pgpass"
+      ansible.builtin.copy:
+        content: "{{ master_ip }}:{{ postgres_port }}:*:{{ replication_user }}:{{ replication_password }}"
+        dest: /var/lib/pgsql/.pgpass
+        owner: postgres
+        group: postgres
+        mode: '0600'
+      when: inventory_hostname == 'pg-2'
+
+    - name: "REPLICA - Effectuer la sauvegarde de base"
+      become_user: postgres
+      ansible.builtin.shell: |
+        pg_basebackup -h {{ master_ip }} -p {{ postgres_port }} -D /var/lib/pgsql/{{ postgres_version }}/data -U {{ replication_user }} -v -P -X stream --checkpoint=fast
+      environment:
+        PGPASSWORD: "{{ replication_password }}"
+      when: inventory_hostname == 'pg-2'
+
+    - name: "REPLICA - Créer standby.signal"
+      ansible.builtin.file:
+        path: /var/lib/pgsql/{{ postgres_version }}/data/standby.signal
+        state: touch
+        owner: postgres
+        group: postgres
+      when: inventory_hostname == 'pg-2'
+
+    - name: "REPLICA - Configurer la connexion primaire"
+      ansible.builtin.lineinfile:
+        path: /var/lib/pgsql/{{ postgres_version }}/data/postgresql.conf
+        regexp: "^#?primary_conninfo ="
+        line: "primary_conninfo = 'host={{ master_ip }} port={{ postgres_port }} user={{ replication_user }} password={{ replication_password }} application_name={{ inventory_hostname }}'"
+      when: inventory_hostname == 'pg-2'
+
+    - name: "REPLICA - Activer hot standby"
+      ansible.builtin.lineinfile:
+        path: /var/lib/pgsql/{{ postgres_version }}/data/postgresql.conf
+        regexp: "^#?hot_standby ="
+        line: "hot_standby = on"
+      when: inventory_hostname == 'pg-2'
+
+    - name: "REPLICA - Démarrer PostgreSQL"
+      ansible.builtin.service:
+        name: postgresql-{{ postgres_version }}
+        state: started
+        enabled: yes
+      when: inventory_hostname == 'pg-2'
+
+    - name: "REPLICA - Vérifier le statut de réplication"
+      become_user: postgres
+      ansible.builtin.shell: |
+        psql -c "SELECT pg_is_in_recovery();"
+      register: replica_status
+      when: inventory_hostname == 'pg-2'
+
+    - name: "REPLICA - Afficher le statut"
+      ansible.builtin.debug:
+        msg: "Replica status: {{ replica_status.stdout }}"
+      when: inventory_hostname == 'pg-2'
+
+    - name: Installer Keepalived pour le cluster Nginx
+      ansible.builtin.dnf:
+        name: keepalived
+        state: present
+
+    - name: Créer le dossier pour les scripts
+      ansible.builtin.file:
+        path: /opt/scripts
+        state: directory
+        owner: root
+        group: root
+        mode: 0755
+
+    - name: Ajout script shell
+      ansible.builtin.template:
+        src: templates/check_nginx.sh.j2
+        dest: /opt/scripts/check_nginx.sh
+        owner: root
+        group: root
+        mode: 0755
+
+    - name: Déployer configuration Keepalived
+      ansible.builtin.template:
+        src: templates/keepalived_pgsql.conf.j2
+        dest: /etc/keepalived/keepalived.conf
+        owner: root
+        group: root
+        mode: 0644
+
+    - name: Déployer configuration Keepalived
+      ansible.builtin.template:
+        src: templates/keepalived2_pgsql.conf.j2
+        dest: /etc/keepalived/keepalived.conf
+        owner: root
+        group: root
+        mode: 0644
+
+- name: Vérification finale
+  hosts: pg-1
+  become: true
+  become_user: postgres
+  tasks:
+    - name: Vérifier les connexions de réplication
+      ansible.builtin.shell: |
+        psql -c "SELECT application_name, client_addr, state FROM pg_stat_replication;"
+      register: repl_status
+
+    - name: Afficher le statut final
+      ansible.builtin.debug:
+        var: repl_status.stdout_lines
